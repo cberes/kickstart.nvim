@@ -258,6 +258,18 @@ require('lazy').setup({
   -- NOTE: Plugins can be added via a link or github org/name. To run setup automatically, use `opts = {}`
   { 'NMAC427/guess-indent.nvim', opts = {} },
 
+  -- removes trailing whitespace
+  {
+    'ntpeters/vim-better-whitespace',
+    -- event = 'VeryLazy',
+    init = function()
+      vim.g.better_whitespace_enabled = 1
+      vim.g.strip_whitespace_on_save = 1
+      vim.g.strip_only_modified_lines = 1
+      vim.g.strip_whitespace_confirm = 0
+    end,
+  },
+
   -- Alternatively, use `config = function() ... end` for full control over the configuration.
   -- If you prefer to call `setup` explicitly, use:
   --    {
@@ -917,6 +929,25 @@ require('lazy').setup({
           end
         end,
       })
+    end,
+  },
+
+  {
+    'mrjones2014/dash.nvim',
+    build = 'make install',
+    cmd = { 'Dash', 'DashWord' }, -- Lazy-load on these commands
+    keys = {
+      -- Optional: bind keys to trigger it immediately
+      { '<leader>d', '<cmd>DashWord<cr>', desc = 'Search word under cursor in Dash' },
+    },
+    config = function()
+      -- The Rust backend setup function must be called via 'libdash_nvim'
+      require('libdash_nvim').setup {
+        -- Your custom configuration goes here, for example:
+        -- file_type_keywords = {
+        --   javascript = { "javascript", "nodejs" },
+        -- }
+      }
     end,
   },
 
