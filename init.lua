@@ -668,7 +668,12 @@ require('lazy').setup({
         -- Java 25 is fine) and supports Java projects through version 25.
         -- First open of a Gradle project triggers a workspace import, which can
         -- take a while on a large multi-module repo before completion works.
-        jdtls = {},
+        -- jdtls is the heaviest server here and has documented unbounded-heap
+        -- growth, so cap its max heap. The jdtls launcher reads JDTLS_JVM_ARGS
+        -- (space-separated). Raise 2g if you hit OOM on a very large project.
+        jdtls = {
+          cmd_env = { JDTLS_JVM_ARGS = '-Xmx2g' },
+        },
 
         -- Python language server (Microsoft Pyright). Mason auto-installs it and
         -- the loop below enables it for .py files. Runs on Node.js (you have it via
@@ -680,7 +685,12 @@ require('lazy').setup({
         -- Mason auto-installs it and the loop below enables it for .js/.jsx/.ts/.tsx.
         -- Runs on Node.js. Picks up the nearest tsconfig.json/jsconfig.json for
         -- project-aware completion.
-        ts_ls = {},
+        -- tsserver has documented memory growth/leaks on large projects, so set a
+        -- hard ceiling (MB): when exceeded it restarts instead of ballooning. 4096
+        -- is generous for the big Angular client; lower it on RAM-constrained boxes.
+        ts_ls = {
+          init_options = { maxTsServerMemory = 4096 },
+        },
 
         -- Perl language server (Perl Navigator). Mason auto-installs it and the
         -- loop below enables it for .pl/.pm files. Runs on Node.js and shells out
@@ -944,8 +954,16 @@ require('lazy').setup({
       -- server only). Falls back to the inherited JAVA_HOME if none is found.
       if jdk21 then
         metals_config.cmd_env = { JAVA_HOME = jdk21 }
-        metals_config.settings = { javaHome = jdk21 }
       end
+      -- Memory mitigations: Metals and (especially) the Bloop build server are
+      -- known memory hogs. Cap the heaps, enable string dedup, and shut Bloop
+      -- down when Neovim exits so it doesn't linger eating RAM between sessions.
+      metals_config.settings = {
+        javaHome = jdk21, -- nil-safe: key is simply absent if no JDK 21 found
+        serverProperties = { '-Xmx2g', '-XX:+UseStringDeduplication', '-XX:+UseG1GC' },
+        bloopJvmProperties = { '-Xmx2G' },
+        shutdownBloopOnEditorClose = true,
+      }
       return metals_config
     end,
     config = function(self, metals_config)
