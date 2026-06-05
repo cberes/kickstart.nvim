@@ -243,6 +243,39 @@ end
 local rtp = vim.opt.rtp
 rtp:prepend(lazypath)
 
+-- [[ Portable JDK 21 discovery ]]
+-- Some language servers (Kotlin's fwcd server, Scala's Metals) only run on
+-- JDK 11/17/21, not the Java 25 that may be the system default. Rather than
+-- hardcode a JDK 21 path (which differs per machine / patch version / distro),
+-- discover one at runtime. Returns a JAVA_HOME string, or nil if none is found
+-- (in which case servers fall back to the inherited JAVA_HOME / `java` on PATH).
+--
+-- Resolution order:
+--   1. $JDK21_HOME env var (explicit per-machine override)
+--   2. Any 21.x SDKMAN candidate (any one works; picked by lexical sort)
+--   3. macOS `/usr/libexec/java_home -v 21`
+local function find_jdk21()
+  local function has_java(home) return home and home ~= '' and (vim.uv or vim.loop).fs_stat(home .. '/bin/java') ~= nil end
+
+  -- 1. Explicit override
+  if has_java(vim.env.JDK21_HOME) then return vim.env.JDK21_HOME end
+
+  -- 2. SDKMAN candidates: take any 21.* that has a java binary (any 21 works)
+  local candidates = vim.fn.glob(vim.fn.expand '~/.sdkman/candidates/java' .. '/21*', false, true)
+  table.sort(candidates)
+  for i = #candidates, 1, -1 do
+    if has_java(candidates[i]) then return candidates[i] end
+  end
+
+  -- 3. macOS java_home
+  if vim.fn.executable '/usr/libexec/java_home' == 1 then
+    local out = vim.trim(vim.fn.system { '/usr/libexec/java_home', '-v', '21' })
+    if vim.v.shell_error == 0 and has_java(out) then return out end
+  end
+
+  return nil
+end
+
 -- [[ Configure and install plugins ]]
 --
 --  To check the current status of your plugins, run
@@ -428,6 +461,8 @@ require('lazy').setup({
       vim.keymap.set('n', '<leader>s.', builtin.oldfiles, { desc = '[S]earch Recent Files ("." for repeat)' })
       vim.keymap.set('n', '<leader>sc', builtin.commands, { desc = '[S]earch [C]ommands' })
       vim.keymap.set('n', '<leader><leader>', builtin.buffers, { desc = '[ ] Find existing buffers' })
+      vim.keymap.set('n', '<leader>ff', builtin.find_files, { desc = 'Fuzzy find files' })
+      vim.keymap.set('n', '<leader>fg', builtin.git_files, { desc = 'Fuzzy find Git files' })
 
       -- This runs on LSP attach per buffer (see main LSP attach function in 'neovim/nvim-lspconfig' config for more info,
       -- it is better explained there). This allows easily switching between pickers if you prefer using something else!
@@ -607,6 +642,9 @@ require('lazy').setup({
         end,
       })
 
+      -- Discover a JDK 21 for servers that can't run on Java 25 (see top of file).
+      local jdk21 = find_jdk21()
+
       -- Enable the following language servers
       --  Feel free to add/remove any LSPs that you want here. They will automatically be installed.
       --  See `:help lsp-config` for information about keys and how to configure
@@ -624,6 +662,62 @@ require('lazy').setup({
         -- ts_ls = {},
 
         stylua = {}, -- Used to format Lua code
+
+        -- Java language server (Eclipse JDT LS). Mason auto-installs it and the
+        -- loop below enables it for .java files. Needs Java 21+ to run (your
+        -- Java 25 is fine) and supports Java projects through version 25.
+        -- First open of a Gradle project triggers a workspace import, which can
+        -- take a while on a large multi-module repo before completion works.
+        jdtls = {},
+
+        -- Python language server (Microsoft Pyright). Mason auto-installs it and
+        -- the loop below enables it for .py files. Runs on Node.js (you have it via
+        -- nvm), so no JDK involved. It auto-detects a project's virtualenv/interpreter
+        -- (incl. uv-managed .venv) for accurate completion and type checking.
+        pyright = {},
+
+        -- JavaScript/TypeScript language server (typescript-language-server).
+        -- Mason auto-installs it and the loop below enables it for .js/.jsx/.ts/.tsx.
+        -- Runs on Node.js. Picks up the nearest tsconfig.json/jsconfig.json for
+        -- project-aware completion.
+        ts_ls = {},
+
+        -- Perl language server (Perl Navigator). Mason auto-installs it and the
+        -- loop below enables it for .pl/.pm files. Runs on Node.js and shells out
+        -- to the `perl` binary (/usr/bin/perl) for diagnostics and module resolution.
+        perlnavigator = {},
+
+        -- HTML and CSS language servers (from vscode-langservers-extracted).
+        -- Mason auto-installs both and the loop below enables them. Node-based.
+        -- Provide tag/attribute completion (html) and property/value completion
+        -- plus color hints (cssls). blink.cmp supplies the completion capabilities.
+        html = {},
+        cssls = {},
+
+        -- Clojure language server (clojure-lsp). Mason installs a native (GraalVM)
+        -- binary, so no JDK is involved. Enabled for .clj/.cljs/.cljc/.edn.
+        clojure_lsp = {},
+
+        -- C/C++ language server (clangd). Uses the system Apple clang toolchain
+        -- (Xcode Command Line Tools). For best results in a project, generate a
+        -- compile_commands.json; single files still get solid completion.
+        clangd = {},
+
+        -- Bash/shell language server. Node-based. Completion + diagnostics for
+        -- shell scripts (pairs well with shellcheck if you install it via Mason).
+        bashls = {},
+
+        -- Kotlin language server (community/fwcd), already installed in Mason.
+        -- Its bundled Kotlin compiler can't run on Java 25, so we pin it to a
+        -- discovered JDK 21 via cmd_env (scoped to this server; your shell stays
+        -- on Java 25). If no JDK 21 is found it falls back to the inherited
+        -- JAVA_HOME. The explicit cmd points at the Mason binary since the bare
+        -- name doesn't resolve on $PATH at enable time. This is the working
+        -- alternative to the dormant JetBrains kotlin_lsp configured after this loop.
+        kotlin_language_server = {
+          cmd = { vim.fn.stdpath 'data' .. '/mason/bin/kotlin-language-server' },
+          cmd_env = jdk21 and { JAVA_HOME = jdk21 } or nil,
+        },
 
         -- Special Lua Config, as recommended by neovim help docs
         lua_ls = {
@@ -672,6 +766,28 @@ require('lazy').setup({
       for name, server in pairs(servers) do
         vim.lsp.config(name, server)
         vim.lsp.enable(name)
+      end
+
+      -- JetBrains official Kotlin language server (kotlin-lsp).
+      -- Installed via Homebrew (`brew install JetBrains/utils/kotlin-lsp`), NOT Mason,
+      -- so it's configured here separately instead of in the `servers` table above.
+      -- It runs on modern JDKs (unlike the older fwcd kotlin-language-server) and
+      -- handles multi-module Gradle projects. `--stdio` selects stdio transport
+      -- (without it, the server defaults to a socket, which Neovim can't use here).
+      --
+      -- DORMANT: JetBrains' alpha builds are time-bombed and the only available build
+      -- (262.4739.0, 2026-04-27) is already EXPIRED with no newer build published.
+      -- Launching it just errors with "This build of intellij-server has expired".
+      -- When JetBrains ships a fresh build, run `brew upgrade kotlin-lsp` and flip
+      -- this flag to true to re-enable.
+      local kotlin_lsp_enabled = false
+      if kotlin_lsp_enabled and vim.fn.executable 'kotlin-lsp' == 1 then
+        vim.lsp.config('kotlin_lsp', {
+          cmd = { 'kotlin-lsp', '--stdio' },
+          filetypes = { 'kotlin' },
+          root_markers = { 'settings.gradle.kts', 'settings.gradle', 'build.gradle.kts', 'build.gradle', '.git' },
+        })
+        vim.lsp.enable 'kotlin_lsp'
       end
     end,
   },
@@ -808,6 +924,38 @@ require('lazy').setup({
       -- Shows a signature help window while you type arguments for a function
       signature = { enabled = true },
     },
+  },
+
+  { -- Scala language server (Metals), via the dedicated nvim-metals plugin.
+    -- Metals is NOT a Mason/servers-table entry; nvim-metals bootstraps the
+    -- server itself. Metals officially supports running only on JDK 11/17/21
+    -- (not 25), so we launch it under JDK 21 via cmd_env while your shell and
+    -- builds stay on Java 25. `settings.javaHome` points Metals at the same 21
+    -- for JDK indexing and the Bloop build server.
+    'scalameta/nvim-metals',
+    dependencies = { 'nvim-lua/plenary.nvim' },
+    ft = { 'scala', 'sbt' },
+    opts = function()
+      local jdk21 = find_jdk21()
+      local metals_config = require('metals').bootstrap_config()
+      -- Use blink.cmp's completion capabilities (same engine as the other LSPs).
+      metals_config.capabilities = require('blink.cmp').get_lsp_capabilities()
+      -- Run the Metals process itself under a discovered JDK 21 (scoped to this
+      -- server only). Falls back to the inherited JAVA_HOME if none is found.
+      if jdk21 then
+        metals_config.cmd_env = { JAVA_HOME = jdk21 }
+        metals_config.settings = { javaHome = jdk21 }
+      end
+      return metals_config
+    end,
+    config = function(self, metals_config)
+      local group = vim.api.nvim_create_augroup('nvim-metals', { clear = true })
+      vim.api.nvim_create_autocmd('FileType', {
+        pattern = self.ft,
+        callback = function() require('metals').initialize_or_attach(metals_config) end,
+        group = group,
+      })
+    end,
   },
 
   { -- You can easily change to a different colorscheme.
